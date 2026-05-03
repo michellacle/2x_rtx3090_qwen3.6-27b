@@ -1,0 +1,34 @@
+=== vLLM Comprehensive Test Suite ===
+Time: Sat Apr 25 09:55:00 AM EDT 2026
+
+[FAIL] Health endpoint                     No response
+[PASS] Model listing                       /home/michel/models/mistral-7b-instruct
+[PASS] Text completion                     Response: ' Paris. It is known as the “City of'
+[PASS] Chat completion                     Answer: ' 4'
+[PASS] Streaming (SSE)                     11 chunks
+[PASS] Deterministic (temp=0)              Response: '
+
+Repeat: hello world'
+[PASS] Creative (temp=1.5)                 Response: ' www without fly legs headaches each des'...
+[PASS] Top-p (0.9)                         Response: '
+
+Artificial intelligence (AI) is a fiel'...
+[PASS] Top-k (5)                           Response: '
+
+Mathematics is the study of numbers, q'...
+[PASS] max_tokens enforcement              Used 3 tokens (limit: 3)
+[PASS] Concurrent requests (4x)            All succeeded
+[PASS] Logprobs (top 3)                    Logprobs included
+[PASS] Stop sequences                      Response length: 0 chars
+[PASS] Presence/Freq penalty               Response: ' This is a simple and fun activity to pr'...
+[PASS] Repetition penalty                  Response: '
+
+The sun is the star at the center of o'...
+[PASS] Epsilon cutoff                      Response: ' Gravity is a force that pulls objects t'...
+[PASS] Logit bias                          Response: 'UCUCUCUCUC'
+
+====== vLLM Test Results ====
+Total:  17 tests
+Passed:  16
+Failed:  1
+==============================
