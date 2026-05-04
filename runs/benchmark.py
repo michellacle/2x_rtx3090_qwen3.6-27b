@@ -66,6 +66,17 @@ def detect_model(base_url: str) -> str:
     return model
 
 
+def detect_max_model_len(base_url: str) -> int | None:
+    info("Fetching max model length...")
+    try:
+        data = get_json(f"{base_url}/models", timeout=10)
+        models = data.get("data", [])
+        return models[0].get("max_model_len") if models else None
+    except Exception:
+        warn("Could not fetch max_model_len from /models endpoint.")
+        return None
+
+
 def detect_api_mode(base_url: str, model: str) -> str:
     payload = {
         "model": model,
@@ -132,12 +143,37 @@ def send_request(
                 "max_tokens": int(max_tokens),
                 "top_p": float(top_p),
                 "temperature": float(temperature),
-                "stream": False,
+                "stream": True,
+                "stream_options": {"include_usage": True},
             }
-            _, raw = post_json(f"{base_url}/chat/completions", payload, timeout=300)
-            data = json.loads(raw)
-            usage = data.get("usage", {})
-            return int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
+            body = json.dumps(payload).encode("utf-8")
+            req = request.Request(
+                f"{base_url}/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            t_t0 = time.time()
+            ttft_ms = None
+            usage = {}
+            with request.urlopen(req, timeout=300) as resp:
+                for line in resp:
+                    chunk = line.decode("utf-8", errors="replace").strip()
+                    if not chunk or not chunk.startswith("data:"):
+                        continue
+                    text = chunk[len("data:"):]
+                    if text.strip() == "[DONE]":
+                        continue
+                    obj = json.loads(text)
+                    if obj.get("choices") and len(obj["choices"]) > 0 and obj["choices"][0].get("delta") \
+                            and obj["choices"][0]["delta"].get("content") is not None and ttft_ms is None:
+                        ttft_ms = round((time.time() - t_t0) * 1000, 1)
+                    if "usage" in obj:
+                        usage = obj["usage"]
+            # fallback: TTFT not captured per-chunk, use total response time
+            if ttft_ms is None:
+                ttft_ms = round((time.time() - t_t0) * 1000, 1)
+            return int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0)), int(ttft_ms), int(usage.get("total_tokens", 0))
         payload = {
             "prompt": prompt,
             "max_tokens": int(max_tokens),
@@ -150,7 +186,7 @@ def send_request(
         if isinstance(data.get("text"), list) and data["text"]:
             text = data["text"][0] or ""
         out_tokens = len(tokenizer.encode(text)) if (text and tokenizer is not None) else 0
-        return 0, out_tokens
+        return 0, out_tokens, 0, 0
     except Exception:
         return 0, 0
 
@@ -193,6 +229,11 @@ def main():
     if not model or model == "unknown":
         err("No model specified and could not auto-detect one. Use -m to specify a model.")
         sys.exit(1)
+    max_model_len = detect_max_model_len(args.url)
+    max_ctx = None
+    if max_model_len is not None:
+        max_ctx = int(max_model_len)
+        info(f"Max context length: {Color.B}{max_ctx}{Color.X}")
     prompts = load_prompts(args.prompt_file, args.prompt, args.num_prompts)
     if not prompts:
         err("No prompts loaded.")
@@ -225,7 +266,7 @@ def main():
     def run_one(i: int):
         nonlocal completed
         t0 = time.time_ns()
-        it, ot = send_request(
+        it, ot, ttft, total = send_request(
             prompt=prompts[i],
             base_url=args.url,
             model=model,
@@ -240,14 +281,14 @@ def main():
         with lock:
             completed += 1
             print(f"\r  Progress: {completed} / {len(prompts)}", end="", flush=True)
-        return i, it, ot, ms
+        return i, it, ot, ttft, total, ms
 
     if args.concurrency <= 1:
         for i in range(len(prompts)):
             if args.rate_limit > 0:
                 time.sleep(round(1.0 / args.rate_limit, 4))
-            idx, it, ot, ms = run_one(i)
-            results[idx] = (it, ot, ms)
+            idx, it, ot, ttft, total, ms = run_one(i)
+            results[idx] = (it, ot, ttft, total, ms)
         print()
     else:
         with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
@@ -258,11 +299,11 @@ def main():
                 futures.append(ex.submit(run_one, i))
             for f in as_completed(futures):
                 try:
-                    idx, it, ot, ms = f.result()
+                    idx, it, ot, ttft, total, ms = f.result()
                 except Exception:
                     warn("A request had issues")
                     continue
-                results[idx] = (it, ot, ms)
+                results[idx] = (it, ot, ttft, total, ms)
         print()
 
     duration_s = max(0.001, time.time() - start)
@@ -274,18 +315,26 @@ def main():
     total_input = sum(v[0] for v in vals)
     total_output = sum(v[1] for v in vals)
     total_tokens = total_input + total_output
-    times = sorted(v[2] for v in vals)
+    ttfts = sorted(v[2] for v in vals)
+    times = sorted(v[4] for v in vals)
     n = len(vals)
 
+    avg_ttft = sum(ttfts) / n
     avg = sum(times) / n
     p50 = times[int(n * 0.50)]
     p90 = times[int(n * 0.90)]
     p95 = times[min(int(n * 0.95), n - 1)]
     p99 = times[min(int(n * 0.99), n - 1)]
+    p50_ttft = ttfts[int(n * 0.50)]
+    p90_ttft = ttfts[int(n * 0.90)]
+    p95_ttft = ttfts[min(int(n * 0.95), n - 1)]
+    p99_ttft = ttfts[min(int(n * 0.99), n - 1)]
+    gen_times_ms = [max(1, max(0, v[4] - v[2])) for v in vals]
+    total_gen_s = sum(gen_times_ms) / 1000.0
     tps = n / duration_s
     tpm = total_output / duration_s
     tokps = total_tokens / duration_s
-
+    avg_tokps_out = total_output / total_gen_s if total_gen_s > 0 else 0
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = f"benchmark_results_{ts}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -298,15 +347,19 @@ def main():
                 "input_tokens",
                 "output_tokens",
                 "total_tokens",
+                "ttft_ms",
+                "ctx_pct",
                 "response_time_ms",
+                "gen_time_ms",
                 "tpm",
             ]
         )
-        for i, (it, ot, ms) in enumerate(vals, start=1):
-            total = it + ot
+        for i, (it, ot, ttft, total, ms) in enumerate(vals, start=1):
+            total_tok = it + ot
             req_tpm = int(ot * 60 / max(ms, 1))
             h = hashlib.md5(prompts[i - 1].encode("utf-8")).hexdigest()
-            w.writerow([i, model, h, it, ot, total, ms, req_tpm])
+            ctx_pct = round(it / max_ctx * 100, 1) if max_ctx else None
+            w.writerow([i, model, h, it, ot, total_tok, ttft, ctx_pct, ms, max(0, ms - ttft), req_tpm])
 
     info(f"Results: {Color.B}{csv_path}{Color.X}")
     print()
@@ -314,33 +367,39 @@ def main():
     print("  BENCHMARK SUMMARY")
     print("==============================================")
     print(f"  Model:            {model}")
+    print(f"  Max ctx:          {Color.B}{max_ctx or 'N/A'}{Color.X}")
     print(f"  Endpoint:         {args.url}")
-    print(f"   Requests:          {n}")
-    print(f"   Duration:          {duration_s:.2f}s")
-    print("----------------------------------------------")
+    print(f"  Requests:         {n}")
+    print(f"  Duration:         {duration_s:.2f}s")
+    print("------------------------------------------------")
     print(f"  Total input tokens:      {total_input}")
     print(f"  Total output tokens:     {total_output}")
     print(f"  Total tokens:            {total_tokens}")
-    print("----------------------------------------------")
+    print("------------------------------------------------")
     print(f"  Throughput:              {tps:.2f} req/s")
     print(f"  Output throughput:       {tokps:.2f} tok/s")
-    print(f"  Output tokens/min:       {tpm:.2f}")
-    print("----------------------------------------------")
-    print(f"  Avg response time:       {avg:.0f} ms")
-    print(f"  P50 response time:       {p50} ms")
-    print(f"  P90 response time:       {p90} ms")
-    print(f"  P95 response time:       {p95} ms")
-    print(f"  P99 response time:       {p99} ms")
+    print(f"  Output tok/s (gen-only): {avg_tokps_out:.1f}")
+    print(f"  Output tok/min:          {tpm:.2f}")
+    print("------------------------------------------------")
+    print(f"  Avg TTFT:            {avg_ttft:.1f} ms")
+    print(f"  TTFT P50:            {p50_ttft:.1f} ms | P90: {p90_ttft:.1f} | P95: {p95_ttft:.1f} | P99: {p99_ttft:.1f}")
+    print("------------------------------------------------")
+    print(f"  Avg response time:   {avg:.0f} ms")
+    print(f"  Response P50:        {p50} ms | P90: {p90} | P95: {p95} | P99: {p99}")
     print("==============================================")
     print()
 
     info("First 20 requests:")
-    print("------------------------------------------------------------")
-    print(f"   {'Req #':<8} {'Input':<10} {'Output':<10} {'Time(ms)':<10} {'Tok/s':<12}")
-    print("------------------------------------------------------------")
-    for i, (it, ot, ms) in enumerate(vals[:20], start=1):
+    print("------ ---- ---- --- ---- ------ ------")
+    print(f"   {'Req#':<6} {'In':<6} {'Out':<6} {'Ctx%':<6} {'TTFT':<8} {'Time':<8} {'tok/s':<8}")
+    print("------ ---- ---- --- ---- ------ ------")
+    for i, (it, ot, ttft, total, ms) in enumerate(vals[:20], start=1):
         tok_s = int(ot * 1000 / max(ms, 1))
-        print(f"    {i:<8} {it:<10} {ot:<10} {ms:<10} {tok_s:<12}")
+        gen = max(0, ms - ttft)
+        tok_s_gen = int(ot * 1000 / max(gen, 1)) if gen > 0 else 0
+        ctx_pct = round(it / max_ctx * 100, 1) if max_ctx else None
+        ctx_s = f"{ctx_pct}%" if ctx_pct is not None else "N/A"
+        print(f"    {i:<6} {it:<8} {ot:<8} {ctx_s:<8} {ttft:<8.1f} {ms:<8} {tok_s_gen:<8}")
     if n > 20:
         print(f"    ... and {n - 20} more (see CSV)")
     print()

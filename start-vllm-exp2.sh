@@ -91,17 +91,51 @@ for i in $(seq 1 120); do
   if curl -sf "http://127.0.0.1:${PORT}/health" &>/dev/null; then
     echo "vLLM is healthy on http://0.0.0.0:${PORT}"
     echo ""
-    echo "=== Quick test (OpenAI-compatible API) ==="
-    response=$(curl -s "http://127.0.0.1:${PORT}/v1/chat/completions" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "llama-lang/Qwen3.6-27B",
-        "messages": [{"role": "user", "content": "Say hi"}],
-        "max_tokens": 10,
-        "temperature": 0
-      }')
-    echo "  $response"
-    echo "==============================="
+
+    # ---- benchmark: streaming request with timing ----
+    BODY=$(printf '{
+      "model": "llama-lang/Qwen3.6-27B",
+      "messages": [{"role": "user", "content": "Say hi"}],
+      "max_tokens": 10,
+      "temperature": 0,
+      "stream": true,
+      "stream_options": {"include_usage": true}
+    }')
+
+    OUTPUT=$(curl -s -w "\n---TIMING---%{time_starttransfer}---%{time_total}---" "$BODY" \
+      "http://127.0.0.1:${PORT}/v1/chat/completions" -H "Content-Type: application/json" \
+      2>/dev/null)
+
+    TTFT_S=$(echo "$OUTPUT" | sed -n 's/.*---TIMING---\([0-9.]*\)-\([0-9.]*\)---.*/\1/p')
+    TOTAL_S=$(echo "$OUTPUT" | sed -n 's/.*---TIMING---\([0-9.]*\)-\([0-9.]*\)---.*/\2/p')
+
+    TTFT_MS=$(awk "BEGIN {printf \"%.1f\", ${TTFT_S:-0} * 1000}")
+    TOTAL_MS=$(awk "BEGIN {printf \"%.1f\", ${TOTAL_S:-0} * 1000}")
+    GEN_S=$(awk "BEGIN {v=${TOTAL_S:-0} - ${TTFT_S:-0}; printf \"%.6f\", (v>0)?v:0}")
+
+    USAGE=$(echo "$OUTPUT" | grep -o '"usage":{[^}]*}')
+    PROMPT_TOKS=$(echo "$USAGE" | grep -oP '"prompt_tokens":\s*\K[0-9]+')
+    COMPLETION_TOKS=$(echo "$USAGE" | grep -oP '"completion_tokens":\s*\K[0-9]+')
+    TOTAL_TOKS=$(echo "$USAGE" | grep -oP '"total_tokens":\s*\K[0-9]+')
+
+    TOKS_OUT=$(awk "BEGIN {if(${GEN_S}>0 && ${COMPLETION_TOKS:-0}>0) printf \"%.1f\", ${COMPLETION_TOKS}/${GEN_S}; else print \"N/A\"}")
+    TOKS_TOTAL=$(awk "BEGIN {if(${TOTAL_S:-0}>0 && ${TOTAL_TOKS:-0}>0) printf \"%.1f\", ${TOTAL_TOKS}/${TOTAL_S}; else print \"N/A\"}")
+
+    echo "  TTFT:       ${TTFT_MS} ms"
+    echo "  Gen time:   ${TOTAL_MS} ms"
+    echo "  Context:    ${PROMPT_TOKS:-N/A} tokens"
+    echo "  tok/s out:  ${TOKS_OUT}"
+    echo "  tok/s total: ${TOKS_TOTAL}"
+
+    echo ""
+    echo "  vRAM:"
+    nvidia-smi --query-gpu=index,memory.used,memory.total \
+      --format=csv,noheader,nounits 2>/dev/null | \
+      while IFS=',' read -r idx used total; do
+        echo "    GPU${idx}: ${used} / ${total} GB"
+      done
+
+    echo "======="
     exit 0
   fi
   if ! kill -0 "$VLLM_PID" 2>/dev/null; then
