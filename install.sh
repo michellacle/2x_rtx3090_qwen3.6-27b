@@ -175,11 +175,6 @@ StandardError=journal
 LogsDirectory=${SERVICE_NAME}
 PIDFile=/run/${SERVICE_NAME}.pid
 
-# GPU access
-DevicePolicy=closed
-ReadOnlyPaths=/
-ReadWritePaths=/tmp /var/log/${SERVICE_NAME} ${SCRIPT_DIR}
-
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -200,6 +195,12 @@ fi
 echo "Creating log directory /var/log/${SERVICE_NAME} ..."
 mkdir -p /var/log/${SERVICE_NAME}
 chown ${RUN_USER}:${RUN_USER} /var/log/${SERVICE_NAME}
+
+# ---- fix triton cache ownership ------------------------------------
+if [ -d "${RUN_HOME}/.triton" ]; then
+  echo "Fixing Triton cache ownership ..."
+  chown -R "${RUN_USER}:${RUN_USER}" "${RUN_HOME}/.triton"
+fi
 
 # ---- write environment file ---------------------------------------
 echo "Writing environment file: $ENV_PATH"
@@ -234,12 +235,6 @@ StandardOutput=journal
 StandardError=journal
 LogsDirectory=${SERVICE_NAME}
 PIDFile=/run/${SERVICE_NAME}.pid
-
-# Security
-DevicePolicy=closed
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/tmp /var/log/${SERVICE_NAME} ${SCRIPT_DIR}
 
 [Install]
 WantedBy=multi-user.target
