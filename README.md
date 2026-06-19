@@ -6,6 +6,7 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 - **Hardware:** 2x NVIDIA RTX 3090 (24 GB each)
 - **Engine:** vLLM 0.23.0 with FlashInfer
 - **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/completions`, etc.)
+- **OS:** Ubuntu Linux only (not Windows, WSL, or macOS)
 
 ## Install as systemd service (recommended)
 

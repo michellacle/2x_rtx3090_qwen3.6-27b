@@ -2,6 +2,9 @@
 # ===================================================================
 # install.sh -- install Qwen3.6-27B server as a systemd service
 #
+# Self-contained: installs CUDA toolkit, creates venv, installs vLLM,
+# downloads the model, and starts the service.
+#
 # Usage: sudo bash install.sh [OPTIONS]
 #
 # Options:
@@ -28,6 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="qwen3.6-27b"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 ENV_PATH="/etc/${SERVICE_NAME}.env"
+VENV_DIR="${SCRIPT_DIR}/.venv"
 
 # ---- parse args ---------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -61,23 +65,35 @@ echo ""
 
 # Check GPU
 if ! command -v nvidia-smi &>/dev/null; then
-  echo "ERROR: nvidia-smi not found — no GPU driver." >&2
+  echo "ERROR: nvidia-smi not found - no GPU driver." >&2
   exit 1
 fi
 GPU_COUNT=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
 echo "GPU: $GPU_COUNT GPU(s) detected"
 
-# Check repo files
-if [ ! -f "${SCRIPT_DIR}/daemon.sh" ]; then
-  echo "ERROR: daemon.sh not found — run from the repo directory." >&2
-  exit 1
+# ---- install CUDA toolkit -----------------------------------------
+if ! command -v nvcc &>/dev/null; then
+  echo ""
+  echo "CUDA toolkit (nvcc) not found. Installing nvidia-cuda-toolkit ..."
+  apt-get update -qq
+  apt-get install -y nvidia-cuda-toolkit
+  echo "CUDA toolkit installed: $(nvcc --version | grep 'release')"
+else
+  echo "CUDA: nvcc $(nvcc --version | grep 'release' | awk '{print $NF}')"
 fi
 
-# Check venv
-if [ ! -f "${SCRIPT_DIR}/.venv/bin/vllm" ]; then
-  echo "ERROR: vLLM not found in ${SCRIPT_DIR}/.venv/" >&2
-  echo "Create the virtual environment and install vLLM first." >&2
-  exit 1
+# ---- create venv and install vLLM ---------------------------------
+if [ ! -f "${VENV_DIR}/bin/vllm" ]; then
+  echo ""
+  echo "Creating virtual environment and installing vLLM ..."
+  if [ ! -d "${VENV_DIR}" ]; then
+    python3 -m venv "${VENV_DIR}"
+  fi
+  "${VENV_DIR}/bin/pip" install --upgrade pip
+  "${VENV_DIR}/bin/pip" install vllm
+  echo "vLLM installed: $("${VENV_DIR}/bin/vllm" --version)"
+else
+  echo "vLLM: $("${VENV_DIR}/bin/vllm" --version)"
 fi
 
 # ---- download model -----------------------------------------------
@@ -115,32 +131,35 @@ if [ "$MODEL_EXISTS" -eq 0 ]; then
   echo ""
 
   export HF_TOKEN
-  DOWNLOAD_OUTPUT=$(${SCRIPT_DIR}/.venv/bin/python3 ${SCRIPT_DIR}/download_model.py \
+  DOWNLOAD_OUTPUT=$("${VENV_DIR}/bin/python3" "${SCRIPT_DIR}/download_model.py" \
     "$HF_REPO" \
     --local-dir "$MODEL_PATH" \
     --token "$HF_TOKEN" 2>&1)
   DOWNLOAD_EXIT=$?
 
-  # Print download progress line by line
   echo "$DOWNLOAD_OUTPUT"
 
   if [ "$DOWNLOAD_EXIT" -ne 0 ]; then
     echo "" >&2
     echo "ERROR: Model download failed." >&2
-    echo "Check the output above for details." >&2
-    echo "You can also download manually:" >&2
-    echo "  HF_TOKEN=xxx ${SCRIPT_DIR}/.venv/bin/python3 ${SCRIPT_DIR}/download_model.py $HF_REPO --local-dir $MODEL_PATH" >&2
     exit 1
   fi
 
-  # Fix ownership so the target user can read it
+  # Fix ownership
   chown -R "${RUN_USER}:${RUN_USER}" "$(dirname "$MODEL_PATH")" 2>/dev/null || true
-
   echo ""
   echo "Model downloaded successfully."
 else
   echo "Model: $MODEL_PATH (already exists)"
 fi
+
+# ---- fix cache ownership -------------------------------------------
+for cache_dir in "${RUN_HOME}/.triton" "${RUN_HOME}/.cache/vllm"; do
+  if [ -d "$cache_dir" ]; then
+    echo "Fixing ownership: $cache_dir"
+    chown -R "${RUN_USER}:${RUN_USER}" "$cache_dir"
+  fi
+done
 
 echo ""
 echo "User: $RUN_USER ($RUN_HOME)"
@@ -153,41 +172,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "Would create: $UNIT_PATH"
   echo "Would create: $ENV_PATH"
   echo "Would enable and start: ${SERVICE_NAME}.service"
-  echo ""
-  echo "--- Unit file ---"
-  cat <<UNIT
-[Unit]
-Description=Qwen3.6-27B LLM Server (2x RTX 3090)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${RUN_USER}
-Group=${RUN_USER}
-WorkingDirectory=${SCRIPT_DIR}
-EnvironmentFile=${ENV_PATH}
-ExecStart=${SCRIPT_DIR}/daemon.sh
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-LogsDirectory=${SERVICE_NAME}
-PIDFile=/run/${SERVICE_NAME}.pid
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-  echo ""
-  echo "--- Environment file ---"
-  cat <<ENV
-MODEL_PATH=${MODEL_PATH}
-VLLM_PORT=${VLLM_PORT}
-VLLM_TP=2
-VLLM_GPU_MEM=0.88
-VLLM_MAX_LEN=131072
-VLLM_MAX_SEQS=2
-ENV
   exit 0
 fi
 
@@ -195,12 +179,6 @@ fi
 echo "Creating log directory /var/log/${SERVICE_NAME} ..."
 mkdir -p /var/log/${SERVICE_NAME}
 chown ${RUN_USER}:${RUN_USER} /var/log/${SERVICE_NAME}
-
-# ---- fix triton cache ownership ------------------------------------
-if [ -d "${RUN_HOME}/.triton" ]; then
-  echo "Fixing Triton cache ownership ..."
-  chown -R "${RUN_USER}:${RUN_USER}" "${RUN_HOME}/.triton"
-fi
 
 # ---- write environment file ---------------------------------------
 echo "Writing environment file: $ENV_PATH"
@@ -252,29 +230,27 @@ systemctl start "${SERVICE_NAME}.service"
 
 # ---- verify -------------------------------------------------------
 echo ""
-sleep 3
-if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-  echo "=== Service is running ==="
-  echo ""
-  echo "  systemd:  systemctl status ${SERVICE_NAME}"
-  echo "  logs:     journalctl -u ${SERVICE_NAME} -f"
-  echo "  stop:     systemctl stop ${SERVICE_NAME}"
-  echo "  restart:  systemctl restart ${SERVICE_NAME}"
-  echo "  uninstall: bash ${SCRIPT_DIR}/uninstall.sh"
-  echo ""
+echo "Waiting for server to start (model loading takes 1-2 minutes) ..."
+for i in $(seq 1 90); do
+  if curl -sf "http://127.0.0.1:${VLLM_PORT}/health" &>/dev/null; then
+    echo ""
+    echo "=== Server is healthy on http://0.0.0.0:${VLLM_PORT} ==="
+    echo ""
+    echo "  systemd:  systemctl status ${SERVICE_NAME}"
+    echo "  logs:     journalctl -u ${SERVICE_NAME} -f"
+    echo "  stop:     systemctl stop ${SERVICE_NAME}"
+    echo "  restart:  systemctl restart ${SERVICE_NAME}"
+    echo "  uninstall: bash ${SCRIPT_DIR}/uninstall.sh"
+    echo ""
+    echo "  Access from other machines:"
+    echo "    http://$(hostname -I | awk '{print $1}'):${VLLM_PORT}"
+    exit 0
+  fi
+  sleep 2
+done
 
-  # Quick health check
-  echo "  Waiting for health check ..."
-  for i in $(seq 1 60); do
-    if curl -sf "http://127.0.0.1:${VLLM_PORT}/health" &>/dev/null; then
-      echo "  Server is healthy on http://0.0.0.0:${VLLM_PORT}"
-      break
-    fi
-    sleep 2
-  done
-else
-  echo "ERROR: Service failed to start." >&2
-  echo "Check logs: journalctl -u ${SERVICE_NAME} -n 50" >&2
-  systemctl status "${SERVICE_NAME}.service" >&2 || true
-  exit 1
-fi
+echo ""
+echo "Server did not become healthy within 3 minutes."
+echo "Check logs: journalctl -u ${SERVICE_NAME} -f" >&2
+systemctl status "${SERVICE_NAME}.service" >&2 || true
+exit 1
