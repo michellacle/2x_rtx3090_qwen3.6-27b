@@ -19,6 +19,12 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 | Disk | ~18 GB | FP8 model weights + venv + cache |
 | RAM | 32 GB recommended | Model loading uses shared memory |
 
+> **How CUDA works here:** The NVIDIA driver ships CUDA runtime libraries
+> (`/usr/local/cuda-13.2/` with driver 595.x). vLLM links against these at
+> startup. The `nvidia-cuda-toolkit` package provides `nvcc` for JIT-compiling
+> Triton and FlashInfer kernels. Both the runtime (from driver) and compiler
+> (from toolkit) must be >= 12.0.
+
 ## Performance
 
 Average throughput: **84.6 tokens/second** (measured with `serve.sh` startup benchmark).

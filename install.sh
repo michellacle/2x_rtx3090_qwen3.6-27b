@@ -167,6 +167,11 @@ for cache_dir in "${RUN_HOME}/.triton" "${RUN_HOME}/.cache/vllm" "${RUN_HOME}/.c
   fi
 done
 
+# Clear stale FlashInfer cache (can cause CUDA compatibility issues on restart)
+echo ""
+echo "Clearing stale FlashInfer cache (will rebuild on next start) ..."
+rm -rf "${RUN_HOME}/.cache/flashinfer" 2>/dev/null || true
+
 echo ""
 echo "User: $RUN_USER ($RUN_HOME)"
 echo "Port: $VLLM_PORT"
