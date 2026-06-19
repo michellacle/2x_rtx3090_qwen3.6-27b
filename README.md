@@ -7,21 +7,32 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 - **Engine:** vLLM 0.23.0 with FlashInfer
 - **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/completions`, etc.)
 
-## Quick start
+## Install as systemd service (recommended)
 
 ```bash
-# Prerequisites: model must be downloaded
-# /home/michel/models/qwen3.6-27b-fp8
-
-bash serve.sh
+sudo bash install.sh
 ```
 
-The server listens on `http://0.0.0.0:8000` by default. On startup it runs a quick benchmark showing TTFT, throughput, and vRAM usage.
-
-## Usage
+Options:
 
 ```bash
-# Start
+sudo bash install.sh --model /path/to/model --port 9000
+sudo bash install.sh --dry-run          # preview without installing
+```
+
+Manage the service:
+
+```bash
+systemctl status qwen3.6-27b            # check status
+journalctl -u qwen3.6-27b -f           # follow logs
+systemctl restart qwen3.6-27b           # restart
+sudo bash uninstall.sh                  # remove service
+```
+
+## Manual run
+
+```bash
+# Start (with startup benchmark)
 bash serve.sh
 
 # Stop
@@ -86,17 +97,21 @@ curl http://localhost:8000/v1/chat/completions \
 
 | File            | Purpose                                  |
 |---------------- |------------------------------------------|
-| `serve.sh`      | Start the server                         |
-| `kill-vllm.sh`  | Stop the server                          |
+| `install.sh`    | Install as systemd service               |
+| `uninstall.sh`  | Remove systemd service                   |
+| `daemon.sh`     | Systemd entry point (no interactive UI)  |
+| `serve.sh`      | Manual start with benchmark              |
 | `test.sh`       | Quick smoke test (5 checks)              |
+| `kill-vllm.sh`  | Stop the server                          |
 | `gpu-status.sh` | GPU health and memory usage              |
 | `clean-logs.sh` | Clean up log files                       |
 | `.env.example`  | Configuration reference                  |
 
 ## Logging
 
-Server output: `/tmp/vllm-serve.log`
-PID file: `/tmp/vllm-<PORT>.pid`
+- **Systemd:** `journalctl -u qwen3.6-27b -f`
+- **Manual:** `/tmp/vllm-serve.log`
+- **PID file:** `/tmp/vllm-<PORT>.pid`
 
 ## Design philosophy
 
