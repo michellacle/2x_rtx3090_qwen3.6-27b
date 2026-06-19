@@ -8,6 +8,12 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 - **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/completions`, etc.)
 - **OS:** Ubuntu Linux only (not Windows, WSL, or macOS)
 
+## Performance
+
+Average throughput: **84.6 tokens/second** (measured with `serve.sh` startup benchmark).
+
+![Benchmark results](benchmark.png)
+
 ## Install as systemd service (recommended)
 
 ```bash
