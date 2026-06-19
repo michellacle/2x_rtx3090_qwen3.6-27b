@@ -71,12 +71,18 @@ fi
 GPU_COUNT=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
 echo "GPU: $GPU_COUNT GPU(s) detected"
 
+# Check NVIDIA driver version (must provide CUDA 12.0+ runtime)
+DRIVER_VERSION=$(nvidia-smi --query-gpu.driver_version --format=csv,noheader | head -1)
+echo "NVIDIA driver: $DRIVER_VERSION"
+CUDA_RUNTIME=$(nvidia-smi --query-gpu.cuda_version --format=csv,noheader | head -1)
+echo "CUDA runtime: $CUDA_RUNTIME"
+
 # ---- install CUDA toolkit -----------------------------------------
 if ! command -v nvcc &>/dev/null; then
   echo ""
   echo "CUDA toolkit (nvcc) not found. Installing nvidia-cuda-toolkit ..."
   apt-get update -qq
-  apt-get install -y nvidia-cuda-toolkit
+  apt-get install -y nvidia-cuda-toolkit ninja-build
   echo "CUDA toolkit installed: $(nvcc --version | grep 'release')"
 else
   echo "CUDA: nvcc $(nvcc --version | grep 'release' | awk '{print $NF}')"
@@ -154,7 +160,7 @@ else
 fi
 
 # ---- fix cache ownership -------------------------------------------
-for cache_dir in "${RUN_HOME}/.triton" "${RUN_HOME}/.cache/vllm"; do
+for cache_dir in "${RUN_HOME}/.triton" "${RUN_HOME}/.cache/vllm" "${RUN_HOME}/.cache/flashinfer"; do
   if [ -d "$cache_dir" ]; then
     echo "Fixing ownership: $cache_dir"
     chown -R "${RUN_USER}:${RUN_USER}" "$cache_dir"

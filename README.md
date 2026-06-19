@@ -6,7 +6,18 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 - **Hardware:** 2x NVIDIA RTX 3090 (24 GB each)
 - **Engine:** vLLM 0.23.0 with FlashInfer
 - **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/completions`, etc.)
-- **OS:** Ubuntu Linux only (not Windows, WSL, or macOS)
+- **OS:** Ubuntu 24.04 Linux only (not Windows, WSL, or macOS)
+
+### Requirements
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| NVIDIA driver | >= 535 (tested with 595.71.05) | Provides CUDA 13.2 runtime libraries |
+| CUDA toolkit (nvcc) | 12.0+ (installed by `install.sh`) | JIT compilation for Triton/FlashInfer kernels |
+| ninja-build | any (installed by `install.sh`) | Build system for FlashInfer |
+| Python | 3.12+ | Virtual environment created automatically |
+| Disk | ~18 GB | FP8 model weights + venv + cache |
+| RAM | 32 GB recommended | Model loading uses shared memory |
 
 ## Performance
 
