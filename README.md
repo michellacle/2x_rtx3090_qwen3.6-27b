@@ -1,33 +1,68 @@
-# vllm-tools
+# Qwen3.6-27B on 2x RTX 3090
 
-Scripts to manage a vLLM OpenAI-compatible API server running vLLM 0.19.1.
+Single-purpose LLM server. One model, one hardware configuration, zero bloat.
+
+- **Model:** Qwen3.6-27B (FP8)
+- **Hardware:** 2x NVIDIA RTX 3090 (24 GB each)
+- **Engine:** vLLM 0.23.0 with FlashInfer
+- **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/completions`, etc.)
+
+## Quick start
+
+```bash
+# Prerequisites: model must be downloaded
+# /home/michel/models/qwen3.6-27b-fp8
+
+bash serve.sh
+```
+
+The server listens on `http://0.0.0.0:8000` by default. On startup it runs a quick benchmark showing TTFT, throughput, and vRAM usage.
 
 ## Usage
 
-### Start
-
 ```bash
-bash ~/code/vllm-tools/start-vllm.sh
+# Start
+bash serve.sh
+
+# Stop
+bash kill-vllm.sh
+
+# Test
+bash test.sh
+
+# Check GPUs
+bash gpu-status.sh
+
+# Clean logs
+bash clean-logs.sh
+
+# Pre-flight check only (don't start)
+VLLM_CHECK_ONLY=1 bash serve.sh
 ```
 
-Options (set as environment variables before running):
+## Configuration
 
-| Variable          | Default | Description                                  |
-| ----------------- | ------- | -------------------------------------------- |
-| `VLLM_PORT`       | 8000    | Port to listen on                            |
-| `VLLM_TP`         | 2       | Tensor parallelism (GPUs to use)             |
-| `VLLM_GPU_MEM`    | 0.95    | Fraction of GPU memory to use                |
-| `VLLM_MAX_LEN`    | 16384   | Maximum model length (tokens)                 |
-| `VLLM_MAX_SEQS`   | 256     | Maximum number of sequences                  |
-| `VLLM_CHECK_ONLY` | (empty) | Run pre-flight checks and exit (don't start) |
+All settings are environment variables. See `.env.example` for the full list.
 
-### Stop
+| Variable       | Default  | Description                        |
+|--------------- |----------|------------------------------------|
+| `VLLM_PORT`    | 8000     | HTTP port                          |
+| `VLLM_TP`      | 2        | Tensor parallel size (GPUs)        |
+| `VLLM_GPU_MEM` | 0.88     | GPU memory utilization fraction    |
+| `VLLM_MAX_LEN` | 131072   | Max context length (tokens)        |
+| `VLLM_MAX_SEQS`| 2        | Max concurrent sequences           |
 
-```bash
-bash ~/code/vllm-tools/stop-vllm.sh
-```
+Override inline: `VLLM_PORT=9000 VLLM_GPU_MEM=0.92 bash serve.sh`
 
-### Test OpenAI-compatible API
+## API
+
+OpenAI-compatible endpoints:
+
+- `GET /health` — health check
+- `GET /v1/models` — list models
+- `POST /v1/chat/completions` — chat
+- `POST /v1/completions` — completions
+- `POST /v1/embeddings` — embeddings (if supported)
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -35,27 +70,36 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{
     "model": "llama-lang/Qwen3.6-27B",
     "messages": [{"role": "user", "content": "Hello"}],
-    "max_tokens": 10,
-    "temperature": 0.7
+    "max_tokens": 100
   }'
 ```
 
-### Available endpoints
+## Features
 
-- `GET /health` -- health check
-- `GET /v1/models` -- list models
-- `POST /v1/chat/completions` -- chat completions
-- `POST /v1/completions` -- text completions
-- `POST /v1/embeddings` -- embeddings (if supported by model)
+- **FP8 KV cache** — reduces memory, enables longer contexts
+- **Multi-token prediction** — 3 speculative tokens via MTP
+- **Prefix caching** — fast repeated prefixes (e.g. system prompts)
+- **Qwen3 reasoning parser** — structured reasoning output
+- **Qwen3 coder tool parser** — function calling support
 
 ## Files
 
-| File                 | Purpose                                |
-| ------------------- | -------------------------------------- |
-| `start-vllm.sh`     | Launch vLLM with OpenAI API enabled    |
-| `stop-vllm.sh`     | Stop the running instance               |
+| File            | Purpose                                  |
+|---------------- |------------------------------------------|
+| `serve.sh`      | Start the server                         |
+| `kill-vllm.sh`  | Stop the server                          |
+| `test.sh`       | Quick smoke test (5 checks)              |
+| `gpu-status.sh` | GPU health and memory usage              |
+| `clean-logs.sh` | Clean up log files                       |
+| `.env.example`  | Configuration reference                  |
 
 ## Logging
 
-Output goes to `/tmp/vllm-serve.log`.
-PID is stored in `/tmp/vllm-$PORT.pid`.
+Server output: `/tmp/vllm-serve.log`
+PID file: `/tmp/vllm-<PORT>.pid`
+
+## Design philosophy
+
+Most LLM serving tools try to be universal — support every model on every hardware. This results in complex configs, hidden defaults, and fragile setups.
+
+This repo does one thing: serve Qwen3.6-27B on 2x RTX 3090s. Every parameter is tuned for this specific combination. If you have different hardware, fork and adjust.

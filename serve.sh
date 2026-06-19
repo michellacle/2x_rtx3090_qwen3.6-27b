@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # ===================================================================
-# start-vllm.sh -- start vLLM with OpenAI-compatible API enabled
+# serve.sh -- start Qwen3.6-27B on 2x RTX 3090 (vLLM OpenAI API)
 # ===================================================================
 set -euo pipefail
 
-# ---- configuration ------------------------------------------------
-VLLM_VENV="/home/michel/venv-vllm-ng"
+export LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib/
+
+# ---- paths --------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VLLM_VENV="${SCRIPT_DIR}/.venv"
 MODEL_PATH="/home/michel/models/qwen3.6-27b-fp8"
+
+# ---- configuration (override via env vars or .env file) -----------
 PORT="${VLLM_PORT:-8000}"
 HOST="0.0.0.0"
 TENSOR_PARALLEL="${VLLM_TP:-2}"
-GPU_MEM_UTIL="${VLLM_GPU_MEM:-0.95}"
-MAX_MODEL_LEN="${VLLM_MAX_LEN:-16384}"
-MAX_NUM_SEQS="${VLLM_MAX_SEQS:-256}"
+GPU_MEM_UTIL="${VLLM_GPU_MEM:-0.88}"
+MAX_MODEL_LEN="${VLLM_MAX_LEN:-131072}"
+MAX_NUM_SEQS="${VLLM_MAX_SEQS:-2}"
 PID_FILE="/tmp/vllm-${PORT}.pid"
 
 # ---- helpers ------------------------------------------------------
@@ -22,7 +27,7 @@ is_running() {
   kill -0 "$pid" 2>/dev/null
 }
 
-# ---- pre-flight checks ------------------ ----------------- ------
+# ---- pre-flight checks --------------------------------------------
 if ! command -v nvidia-smi &>/dev/null; then
   echo "ERROR: nvidia-smi not found — no GPU visible." >&2
   exit 1
@@ -38,7 +43,7 @@ if [ -n "${VLLM_CHECK_ONLY:-}" ]; then
   exit 0
 fi
 
-# ---- stop any previous instance ------------ -------------------
+# ---- stop any previous instance -----------------------------------
 if is_running; then
   echo "vLLM already running on port ${PORT} (pid=$(cat "$PID_FILE"))." >&2
   read -rp "Kill existing instance? [y/N] " confirm
@@ -59,7 +64,7 @@ elif [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"   # stale pid file
 fi
 
-# ---- launch ---------------------------- ---- -------------------
+# ---- launch -------------------------------------------------------
 echo "Starting vLLM on ${HOST}:${PORT} ..."
 
 nohup $VLLM_VENV/bin/vllm serve \
@@ -70,16 +75,13 @@ nohup $VLLM_VENV/bin/vllm serve \
   --gpu-memory-utilization "$GPU_MEM_UTIL" \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_NUM_SEQS" \
-  --quantization fp8 \
-  --disable-custom-all-reduce \
-  --enforce-eager \
-  --trust-remote-code \
-  --language-model-only \
+  --kv-cache-dtype fp8 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
   --served-model-name llama-lang/Qwen3.6-27B \
-  --dtype auto \
-  --max-num-batched-tokens "$MAX_MODEL_LEN" \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
   --enable-prefix-caching \
-  --reasoning-parser deepseek_r1 \
+  --reasoning-parser qwen3 \
   --disable-log-stats \
   2>&1 &> /tmp/vllm-serve.log &
 
@@ -93,7 +95,7 @@ for i in $(seq 1 120); do
     echo "vLLM is healthy on http://0.0.0.0:${PORT}"
     echo ""
 
-    # ---- benchmark: streaming request with timing ----
+    # ---- quick benchmark: streaming request with timing ----
     BODY=$(printf '{
       "model": "llama-lang/Qwen3.6-27B",
       "messages": [{"role": "user", "content": "Say hi"}],

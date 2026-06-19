@@ -1,2 +1,0 @@
-request_id,model,prompt_hash,input_tokens,output_tokens,total_tokens,response_time_ms,tpm
-1,llama-lang/Qwen3.6-27B,527ce82dd14d4006c8028c281f370deb,15,512,527,18503,1

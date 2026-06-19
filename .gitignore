@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual env (committed, but ignore if regenerated)
+# .venv/
+
+# Logs and temp
+*.log
+*.pid
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/qwen_test_*.txt
