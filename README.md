@@ -17,7 +17,20 @@ Options:
 
 ```bash
 sudo bash install.sh --model /path/to/model --port 9000
-sudo bash install.sh --dry-run          # preview without installing
+sudo bash install.sh --hf-repo Qwen/Qwen3.6-27B-FP8    # custom HF repo
+sudo bash install.sh --skip-download                    # model already on disk
+sudo bash install.sh --dry-run                          # preview without installing
+```
+
+Hugging Face token (required for download):
+
+```bash
+# Option 1: set before running
+export HF_TOKEN=hf_...
+sudo -E bash install.sh
+
+# Option 2: the installer will prompt you interactively
+sudo bash install.sh
 ```
 
 Manage the service:
@@ -95,17 +108,18 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Files
 
-| File            | Purpose                                  |
-|---------------- |------------------------------------------|
-| `install.sh`    | Install as systemd service               |
-| `uninstall.sh`  | Remove systemd service                   |
-| `daemon.sh`     | Systemd entry point (no interactive UI)  |
-| `serve.sh`      | Manual start with benchmark              |
-| `test.sh`       | Quick smoke test (5 checks)              |
-| `kill-vllm.sh`  | Stop the server                          |
-| `gpu-status.sh` | GPU health and memory usage              |
-| `clean-logs.sh` | Clean up log files                       |
-| `.env.example`  | Configuration reference                  |
+| File                | Purpose                                  |
+|---------------------|------------------------------------------|
+| `install.sh`        | Install as systemd service (+ download)  |
+| `uninstall.sh`      | Remove systemd service                   |
+| `download_model.py` | Download model from Hugging Face         |
+| `daemon.sh`         | Systemd entry point (no interactive UI)  |
+| `serve.sh`          | Manual start with benchmark              |
+| `test.sh`           | Quick smoke test (5 checks)              |
+| `kill-vllm.sh`      | Stop the server                          |
+| `gpu-status.sh`     | GPU health and memory usage              |
+| `clean-logs.sh`     | Clean up log files                       |
+| `.env.example`      | Configuration reference                  |
 
 ## Logging
 

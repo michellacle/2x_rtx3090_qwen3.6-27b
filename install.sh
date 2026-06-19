@@ -5,17 +5,25 @@
 # Usage: sudo bash install.sh [OPTIONS]
 #
 # Options:
-#   --model PATH       Model directory (default: /home/michel/models/qwen3.6-27b-fp8)
+#   --model PATH       Model directory (default: ~/models/qwen3.6-27b-fp8)
+#   --hf-repo REPO     Hugging Face repo (default: Qwen/Qwen3.6-27B-FP8)
 #   --port NUM         HTTP port (default: 8000)
 #   --user NAME        System user to run as (default: current user)
+#   --skip-download    Skip model download (must already exist)
 #   --dry-run          Show what would be done without making changes
+#
+# Hugging Face token:
+#   Set HF_TOKEN environment variable, or the script will prompt you.
+#   Get a token at: https://huggingface.co/settings/tokens
 # ===================================================================
 set -euo pipefail
 
 # ---- defaults -----------------------------------------------------
 VLLM_PORT=8000
+HF_REPO="Qwen/Qwen3.6-27B-FP8"
 RUN_USER=""
 DRY_RUN=0
+SKIP_DOWNLOAD=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="qwen3.6-27b"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -24,10 +32,12 @@ ENV_PATH="/etc/${SERVICE_NAME}.env"
 # ---- parse args ---------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --model)  MODEL_PATH="$2"; shift 2 ;;
-    --port)   VLLM_PORT="$2"; shift 2 ;;
-    --user)   RUN_USER="$2";  shift 2 ;;
-    --dry-run) DRY_RUN=1;     shift ;;
+    --model)         MODEL_PATH="$2"; shift 2 ;;
+    --hf-repo)       HF_REPO="$2";     shift 2 ;;
+    --port)          VLLM_PORT="$2";   shift 2 ;;
+    --user)          RUN_USER="$2";    shift 2 ;;
+    --skip-download) SKIP_DOWNLOAD=1;  shift ;;
+    --dry-run)       DRY_RUN=1;        shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -35,17 +45,14 @@ done
 # ---- determine user -----------------------------------------------
 if [ -z "$RUN_USER" ]; then
   if [ "$(id -u)" -eq 0 ]; then
-    # Running as root — use SUDO_USER or first non-root user with nvidia group
     RUN_USER="${SUDO_USER:-$(find /home -maxdepth 1 -mindepth 1 -printf '%f\n' | head -1)}"
   else
-    echo "ERROR: Run with sudo: sudo bash install.sh [--model PATH] [--port NUM]" >&2
+    echo "ERROR: Run with sudo: sudo bash install.sh" >&2
     exit 1
   fi
 fi
 
 RUN_HOME=$(eval echo "~${RUN_USER}")
-
-# Default model path uses the target user's home (set after user is known)
 MODEL_PATH="${MODEL_PATH:-${RUN_HOME}/models/qwen3.6-27b-fp8}"
 
 # ---- pre-flight checks --------------------------------------------
@@ -60,15 +67,7 @@ fi
 GPU_COUNT=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
 echo "GPU: $GPU_COUNT GPU(s) detected"
 
-# Check model
-if [ ! -d "$MODEL_PATH" ]; then
-  echo "ERROR: Model not found at $MODEL_PATH" >&2
-  echo "Download the model first, then retry with --model /path/to/model" >&2
-  exit 1
-fi
-echo "Model: $MODEL_PATH"
-
-# Check repo
+# Check repo files
 if [ ! -f "${SCRIPT_DIR}/daemon.sh" ]; then
   echo "ERROR: daemon.sh not found — run from the repo directory." >&2
   exit 1
@@ -81,6 +80,69 @@ if [ ! -f "${SCRIPT_DIR}/.venv/bin/vllm" ]; then
   exit 1
 fi
 
+# ---- download model -----------------------------------------------
+MODEL_EXISTS=0
+if [ -f "${MODEL_PATH}/config.json" ]; then
+  MODEL_EXISTS=1
+fi
+
+if [ "$MODEL_EXISTS" -eq 0 ]; then
+  if [ "$SKIP_DOWNLOAD" -eq 1 ]; then
+    echo "ERROR: Model not found at $MODEL_PATH and --skip-download is set." >&2
+    exit 1
+  fi
+
+  echo ""
+  echo "Model not found at $MODEL_PATH"
+  echo "Downloading from Hugging Face: $HF_REPO"
+  echo ""
+
+  # Get HF token
+  HF_TOKEN="${HF_TOKEN:-}"
+  if [ -z "$HF_TOKEN" ]; then
+    echo "No HF_TOKEN environment variable set."
+    echo "Get a token at: https://huggingface.co/settings/tokens"
+    echo ""
+    read -rs -p "Hugging Face token: " HF_TOKEN
+    echo ""
+    if [ -z "$HF_TOKEN" ]; then
+      echo "ERROR: Empty token." >&2
+      exit 1
+    fi
+  fi
+
+  echo "Downloading model (this may take several minutes) ..."
+  echo ""
+
+  export HF_TOKEN
+  DOWNLOAD_OUTPUT=$(${SCRIPT_DIR}/.venv/bin/python3 ${SCRIPT_DIR}/download_model.py \
+    "$HF_REPO" \
+    --local-dir "$MODEL_PATH" \
+    --token "$HF_TOKEN" 2>&1)
+  DOWNLOAD_EXIT=$?
+
+  # Print download progress line by line
+  echo "$DOWNLOAD_OUTPUT"
+
+  if [ "$DOWNLOAD_EXIT" -ne 0 ]; then
+    echo "" >&2
+    echo "ERROR: Model download failed." >&2
+    echo "Check the output above for details." >&2
+    echo "You can also download manually:" >&2
+    echo "  HF_TOKEN=xxx ${SCRIPT_DIR}/.venv/bin/python3 ${SCRIPT_DIR}/download_model.py $HF_REPO --local-dir $MODEL_PATH" >&2
+    exit 1
+  fi
+
+  # Fix ownership so the target user can read it
+  chown -R "${RUN_USER}:${RUN_USER}" "$(dirname "$MODEL_PATH")" 2>/dev/null || true
+
+  echo ""
+  echo "Model downloaded successfully."
+else
+  echo "Model: $MODEL_PATH (already exists)"
+fi
+
+echo ""
 echo "User: $RUN_USER ($RUN_HOME)"
 echo "Port: $VLLM_PORT"
 echo "Service: ${SERVICE_NAME}.service"
@@ -208,7 +270,7 @@ if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
 
   # Quick health check
   echo "  Waiting for health check ..."
-  for i in $(seq 1 30); do
+  for i in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:${VLLM_PORT}/health" &>/dev/null; then
       echo "  Server is healthy on http://0.0.0.0:${VLLM_PORT}"
       break
