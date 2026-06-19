@@ -27,7 +27,7 @@ Single-purpose LLM server. One model, one hardware configuration, zero bloat.
 
 ## Performance
 
-Average throughput: **84.6 tokens/second** (measured with `serve.sh` startup benchmark).
+Average throughput: **84.6 tokens/second** (measured with https://github.com/michellacle/local-llm-gateway).
 
 ![Benchmark results](benchmark.png)
 
